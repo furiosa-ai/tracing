@@ -9,7 +9,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::marker;
 use std::thread;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing_core::span::{self, Attributes, Id, Record};
 use tracing_core::{field, Event, Subscriber};
 #[cfg(feature = "tracing-log")]
@@ -22,6 +22,9 @@ const SPAN_NAME_FIELD: &str = "otel.name";
 const SPAN_KIND_FIELD: &str = "otel.kind";
 const SPAN_STATUS_CODE_FIELD: &str = "otel.status_code";
 const SPAN_STATUS_MESSAGE_FIELD: &str = "otel.status_message";
+
+const SPAN_NPU_START_TIME_FIELD: &str = "npu.start";
+const SPAN_NPU_END_TIME_FIELD: &str = "npu.end";
 
 const FIELD_EXCEPTION_MESSAGE: &str = "exception.message";
 const FIELD_EXCEPTION_STACKTRACE: &str = "exception.stacktrace";
@@ -313,6 +316,27 @@ impl<'a> field::Visit for SpanAttributeVisitor<'a> {
     /// [`Span`]: opentelemetry::trace::Span
     fn record_i64(&mut self, field: &field::Field, value: i64) {
         self.record(KeyValue::new(field.name(), value));
+    }
+
+    /// Set attributes on the underlying OpenTelemetry [`Span`] from `u128` values.
+    ///
+    /// [`Span`]: opentelemetry::trace::Span
+    fn record_u128(&mut self, field: &field::Field, value: u128) {
+        match field.name() {
+            SPAN_NPU_START_TIME_FIELD => {
+                let secs = (value / 1_000_000_000) as u64;
+                let nanos = (value % 1_000_000_000) as u32;
+
+                self.span_builder.start_time = UNIX_EPOCH.checked_add(Duration::new(secs, nanos));
+            }
+            SPAN_NPU_END_TIME_FIELD => {
+                let secs = (value / 1_000_000_000) as u64;
+                let nanos = (value % 1_000_000_000) as u32;
+
+                self.span_builder.end_time = UNIX_EPOCH.checked_add(Duration::new(secs, nanos));
+            }
+            _ => self.record_debug(field, &value),
+        }
     }
 
     /// Set attributes on the underlying OpenTelemetry [`Span`] from `&str` values.
@@ -916,10 +940,12 @@ where
                 }
             }
 
-            // Assign end time, build and start span, drop span to export
-            builder
-                .with_end_time(SystemTime::now())
-                .start_with_context(&self.tracer, &parent_cx);
+            if builder.end_time.is_none() {
+                // Assign end time
+                builder = builder.with_end_time(SystemTime::now());
+            }
+            // Build and start span, drop span to export
+            builder.start_with_context(&self.tracer, &parent_cx);
         }
     }
 
@@ -1136,6 +1162,55 @@ mod tests {
 
         let recorded_status_message = tracer.with_data(|data| data.builder.status_message.clone());
         assert_eq!(recorded_status_message, Some(message.into()))
+    }
+
+    #[test]
+    fn span_start_time() {
+        let tracer = TestTracer(Arc::new(Mutex::new(None)));
+        let subscriber = tracing_subscriber::registry().with(layer().with_tracer(tracer.clone()));
+
+        let now = SystemTime::now();
+        let duration = now.duration_since(std::time::UNIX_EPOCH).unwrap();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug_span!("request", npu.start = duration.as_nanos());
+        });
+
+        let recorded_start_time = tracer.with_data(|data| data.builder.start_time);
+        assert_eq!(recorded_start_time, Some(now));
+    }
+
+    #[test]
+    fn span_end_time_eager() {
+        let tracer = TestTracer(Arc::new(Mutex::new(None)));
+        let subscriber = tracing_subscriber::registry().with(layer().with_tracer(tracer.clone()));
+
+        let now = SystemTime::now();
+        let duration = now.duration_since(std::time::UNIX_EPOCH).unwrap();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug_span!("request", npu.end = duration.as_nanos());
+        });
+
+        let recorded_end_time = tracer.with_data(|data| data.builder.end_time);
+        assert_eq!(recorded_end_time, Some(now));
+    }
+
+    #[test]
+    fn span_end_time_lazy() {
+        let tracer = TestTracer(Arc::new(Mutex::new(None)));
+        let subscriber = tracing_subscriber::registry().with(layer().with_tracer(tracer.clone()));
+
+        let now = SystemTime::now();
+        let duration = now.duration_since(std::time::UNIX_EPOCH).unwrap();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::debug_span!("request", npu.end = field::Empty);
+            span.record("npu.end", &duration.as_nanos());
+        });
+
+        let recorded_end_time = tracer.with_data(|data| data.builder.end_time);
+        assert_eq!(recorded_end_time, Some(now));
     }
 
     #[test]
