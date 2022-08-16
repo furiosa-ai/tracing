@@ -114,6 +114,9 @@ pub trait OpenTelemetrySpanExt {
     /// make_request(Span::current().context())
     /// ```
     fn context(&self) -> Context;
+
+    fn set_start_time(&self, start_time: std::time::SystemTime);
+    fn set_end_time(&self, end_time: std::time::SystemTime);
 }
 
 impl OpenTelemetrySpanExt for tracing::Span {
@@ -166,5 +169,25 @@ impl OpenTelemetrySpanExt for tracing::Span {
         });
 
         cx.unwrap_or_default()
+    }
+
+    fn set_start_time(&self, start_time: std::time::SystemTime) {
+        self.with_subscriber(|(id, subscriber)| {
+            if let Some(get_context) = subscriber.downcast_ref::<WithContext>() {
+                get_context.with_context(subscriber, id, |otel_data, _tracer| {
+                    otel_data.builder.start_time = Some(start_time);
+                })
+            }
+        });
+    }
+
+    fn set_end_time(&self, end_time: std::time::SystemTime) {
+        self.with_subscriber(|(id, subscriber)| {
+            if let Some(get_context) = subscriber.downcast_ref::<WithContext>() {
+                get_context.with_context(subscriber, id, |otel_data, _tracer| {
+                    otel_data.builder.end_time = Some(end_time);
+                })
+            }
+        });
     }
 }
