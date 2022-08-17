@@ -916,10 +916,12 @@ where
                 }
             }
 
-            // Assign end time, build and start span, drop span to export
-            builder
-                .with_end_time(SystemTime::now())
-                .start_with_context(&self.tracer, &parent_cx);
+            if builder.end_time.is_none() {
+                // Assign end time
+                builder = builder.with_end_time(SystemTime::now());
+            }
+            // Build and start span, drop span to export
+            builder.start_with_context(&self.tracer, &parent_cx);
         }
     }
 
