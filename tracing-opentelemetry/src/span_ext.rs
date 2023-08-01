@@ -174,7 +174,7 @@ impl OpenTelemetrySpanExt for tracing::Span {
     fn set_start_time(&self, start_time: std::time::SystemTime) {
         self.with_subscriber(|(id, subscriber)| {
             if let Some(get_context) = subscriber.downcast_ref::<WithContext>() {
-                get_context.with_context(subscriber, id, |otel_data, _tracer| {
+                get_context.with_context_minimal(subscriber, id, |otel_data| {
                     otel_data.builder.start_time = Some(start_time);
                 })
             }
@@ -184,7 +184,7 @@ impl OpenTelemetrySpanExt for tracing::Span {
     fn set_end_time(&self, end_time: std::time::SystemTime) {
         self.with_subscriber(|(id, subscriber)| {
             if let Some(get_context) = subscriber.downcast_ref::<WithContext>() {
-                get_context.with_context(subscriber, id, |otel_data, _tracer| {
+                get_context.with_context_minimal(subscriber, id, |otel_data| {
                     otel_data.builder.end_time = Some(end_time);
                 })
             }
