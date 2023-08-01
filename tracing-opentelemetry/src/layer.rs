@@ -79,6 +79,7 @@ where
 // See https://github.com/tokio-rs/tracing/blob/4dad420ee1d4607bad79270c1520673fa6266a3d/tracing-error/src/layer.rs
 pub(crate) struct WithContext(
     fn(&tracing::Dispatch, &span::Id, f: &mut dyn FnMut(&mut OtelData, &dyn PreSampledTracer)),
+    fn(&tracing::Dispatch, &span::Id, f: &mut dyn FnMut(&mut OtelData)),
 );
 
 impl WithContext {
@@ -91,6 +92,17 @@ impl WithContext {
         mut f: impl FnMut(&mut OtelData, &dyn PreSampledTracer),
     ) {
         (self.0)(dispatch, id, &mut f)
+    }
+
+    // This function doesn't try to downcast subscriber into OpernTelemtryLayer.
+    // Instead, PreSampledTracer is not given.
+    pub(crate) fn with_context_minimal<'a>(
+        &self,
+        dispatch: &'a tracing::Dispatch,
+        id: &span::Id,
+        mut f: impl FnMut(&mut OtelData),
+    ) {
+        (self.1)(dispatch, id, &mut f)
     }
 }
 
@@ -428,7 +440,7 @@ where
                 record: false,
                 propagate: false,
             },
-            get_context: WithContext(Self::get_context),
+            get_context: WithContext(Self::get_context, Self::get_context_minimal),
             _registry: marker::PhantomData,
         }
     }
@@ -469,7 +481,10 @@ where
             tracked_inactivity: self.tracked_inactivity,
             with_threads: self.with_threads,
             exception_config: self.exception_config,
-            get_context: WithContext(OpenTelemetryLayer::<S, Tracer>::get_context),
+            get_context: WithContext(
+                OpenTelemetryLayer::<S, Tracer>::get_context,
+                OpenTelemetryLayer::<S, Tracer>::get_context_minimal,
+            ),
             _registry: self._registry,
         }
     }
@@ -626,6 +641,24 @@ where
         let mut extensions = span.extensions_mut();
         if let Some(builder) = extensions.get_mut::<OtelData>() {
             f(builder, &layer.tracer);
+        }
+    }
+
+    fn get_context_minimal(
+        dispatch: &tracing::Dispatch,
+        id: &span::Id,
+        f: &mut dyn FnMut(&mut OtelData),
+    ) {
+        let subscriber = dispatch
+            .downcast_ref::<S>()
+            .expect("subscriber should downcast to expected type; this is a bug!");
+        let span = subscriber
+            .span(id)
+            .expect("registry should have a span for the current ID");
+
+        let mut extensions = span.extensions_mut();
+        if let Some(builder) = extensions.get_mut::<OtelData>() {
+            f(builder);
         }
     }
 
